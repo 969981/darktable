@@ -812,6 +812,21 @@ changes (where available).
   the chromaticity, hue, color or HSV blend modes in display RGB, where
   OpenCL gave the right color.
 
+- Fixed stale color temperature and illuminant color in color calibration
+  after white balance changes when using "as shot in camera".
+
+- Fixed input color profile and highlight reconstruction (opposed and
+  segmentation modes) still applying part of the white balance
+  correction when the white balance module, set to "as shot to
+  reference", was switched off on a raw image. Edits made that way
+  render with different colors.
+
+- Fixed a color cast when white balance in "as shot to reference" mode
+  was pasted from another image, or applied through a style or preset:
+  white balance applied the pasted multipliers, but input color profile
+  completed the correction with the target image's own as-shot
+  multipliers.
+
 ## Lua
 
 ### API Version
