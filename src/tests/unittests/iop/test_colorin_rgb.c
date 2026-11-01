@@ -186,7 +186,7 @@ static void assert_pixels(const float *actual, const float *expected, const floa
     for_each_channel(c)
       if(!isfinite(actual[4*k+c])
          || fabsf(actual[4*k+c] - expected[4*k+c]) > tolerance * MAX(1.0f, fabsf(expected[4*k+c])))
-        fail_msg("pixel %zu channel %d: %.8f != %.8f", k, c, actual[4*k+c], expected[4*k+c]);
+        fail_msg("pixel %zu channel %zu: %.8f != %.8f", k, c, actual[4*k+c], expected[4*k+c]);
 }
 
 static void test_migration(void **state)
