@@ -51,6 +51,22 @@ rawprepare_1f(read_only image2d_t in, write_only image2d_t out,
   write_imagef(out, (int2)(x, y), oval);
 }
 
+// the gain at map_pt, interpolated as in rawprepare's process(). The
+// linear sampler would do the same, but GPUs may compute its weights with
+// as little as 8 bits of precision, which shows in the image
+static float _gainmap_gain(read_only image2d_t map, const int2 map_size, const float2 map_pt)
+{
+  const float2 pt = clamp(map_pt, (float2)(0.0f, 0.0f), convert_float2(map_size));
+  const int2 i0 = min(convert_int2(pt), map_size - 1);
+  const int2 i1 = min(i0 + 1, map_size - 1);
+  const float2 frac = pt - convert_float2(i0);
+  const float top = (1.0f - frac.x) * read_imagef(map, sampleri, (int2)(i0.x, i0.y)).x
+                    + frac.x * read_imagef(map, sampleri, (int2)(i1.x, i0.y)).x;
+  const float bottom = (1.0f - frac.x) * read_imagef(map, sampleri, (int2)(i0.x, i1.y)).x
+                       + frac.x * read_imagef(map, sampleri, (int2)(i1.x, i1.y)).x;
+  return (1.0f - frac.y) * top + frac.y * bottom;
+}
+
 kernel void
 rawprepare_1f_gainmap(read_only image2d_t in, write_only image2d_t out,
               const int width, const int height,
@@ -74,21 +90,20 @@ rawprepare_1f_gainmap(read_only image2d_t in, write_only image2d_t out,
   const float rem = fma(-q, div[id], n);
   float pixel_scaled = fma(rem, rdiv[id], q);
 
-  // Add 0.5 to compensate for CLK_FILTER_LINEAR subtracting 0.5 from the specified coordinates
-  const float2 map_pt = ((float2)(rx+cx+x,ry+cy+y) * im_to_rel - map_origin) * rel_to_map + (float2)(0.5, 0.5);
+  const float2 map_pt = ((float2)(rx+cx+x,ry+cy+y) * im_to_rel - map_origin) * rel_to_map;
   switch(id)
   {
     case 0:
-      pixel_scaled *= read_imagef(map0, samplerf, map_pt).x;
+      pixel_scaled *= _gainmap_gain(map0, map_size, map_pt);
       break;
     case 1:
-      pixel_scaled *= read_imagef(map1, samplerf, map_pt).x;
+      pixel_scaled *= _gainmap_gain(map1, map_size, map_pt);
       break;
     case 2:
-      pixel_scaled *= read_imagef(map2, samplerf, map_pt).x;
+      pixel_scaled *= _gainmap_gain(map2, map_size, map_pt);
       break;
     case 3:
-      pixel_scaled *= read_imagef(map3, samplerf, map_pt).x;
+      pixel_scaled *= _gainmap_gain(map3, map_size, map_pt);
       break;
   }
 
@@ -133,28 +148,27 @@ rawprepare_1f_unnormalized_gainmap(read_only image2d_t in, write_only image2d_t 
 
   if(x >= width  || y >= height) return;
 
-  const float pix = read_imageui(in, sampleri, (int2)(x + cx, y + cy)).x;
+  const float pix = read_imagef(in, sampleri, (int2)(x + cx, y + cy)).x;
   const int id = BL(ry+cy+y, rx+cx+x);
   const float n = pix - sub[id];
   const float q = n * rdiv[id];
   const float rem = fma(-q, div[id], n);
   float pixel_scaled = fma(rem, rdiv[id], q);
 
-  // Add 0.5 to compensate for CLK_FILTER_LINEAR subtracting 0.5 from the specified coordinates
-  const float2 map_pt = ((float2)(rx+cx+x,ry+cy+y) * im_to_rel - map_origin) * rel_to_map + (float2)(0.5, 0.5);
+  const float2 map_pt = ((float2)(rx+cx+x,ry+cy+y) * im_to_rel - map_origin) * rel_to_map;
   switch(id)
   {
     case 0:
-      pixel_scaled *= read_imagef(map0, samplerf, map_pt).x;
+      pixel_scaled *= _gainmap_gain(map0, map_size, map_pt);
       break;
     case 1:
-      pixel_scaled *= read_imagef(map1, samplerf, map_pt).x;
+      pixel_scaled *= _gainmap_gain(map1, map_size, map_pt);
       break;
     case 2:
-      pixel_scaled *= read_imagef(map2, samplerf, map_pt).x;
+      pixel_scaled *= _gainmap_gain(map2, map_size, map_pt);
       break;
     case 3:
-      pixel_scaled *= read_imagef(map3, samplerf, map_pt).x;
+      pixel_scaled *= _gainmap_gain(map3, map_size, map_pt);
       break;
   }
 
@@ -478,6 +492,75 @@ kernel void highlights_opposed(read_only image2d_t in,
     }
   }
   write_imagef(out, (int2)(x, y), val);
+}
+
+// linear raws, see _process_linear_opposed() in src/iop/hlreconstruct/opposed.c
+static float _calc_linear_refavg(const float4 pixel, const int color)
+{
+  const float ins[3] = { cbrt(fmax(0.0f, pixel.x)), cbrt(fmax(0.0f, pixel.y)), cbrt(fmax(0.0f, pixel.z)) };
+  const float opp[3] = { 0.5f*(ins[1]+ins[2]), 0.5f*(ins[0]+ins[2]), 0.5f*(ins[0]+ins[1]) };
+  return fcube(opp[color]);
+}
+
+// a mask cell covers 3x3 pixels; the last row and column of cells also take
+// the pixels left over by the division, as _raw_to_cmap() clamps to them
+kernel void highlights_initmask_linear(read_only image2d_t in,
+                                       global char *inmask,
+                                       const int msize,
+                                       const int mwidth,
+                                       const int mheight,
+                                       const int iwidth,
+                                       const int iheight,
+                                       const float4 clips)
+{
+  const int mcol = get_global_id(0);
+  const int mrow = get_global_id(1);
+
+  if(mcol >= mwidth || mrow >= mheight)
+    return;
+
+  const int irow = 3*mrow;
+  const int icol = 3*mcol;
+  const int rowend = mrow == mheight - 1 ? iheight : irow + 3;
+  const int colend = mcol == mwidth - 1 ? iwidth : icol + 3;
+  char mbuff[3] = { 0, 0, 0 };
+
+  for(int y = irow; y < rowend; y++)
+  {
+    for(int x = icol; x < colend; x++)
+    {
+      const float4 val = readpixel(in, x, y);
+      mbuff[0] |= val.x >= clips.x;
+      mbuff[1] |= val.y >= clips.y;
+      mbuff[2] |= val.z >= clips.z;
+    }
+  }
+
+  const int mdx = mad24(mrow, mwidth, mcol);
+  for(int c = 0; c < 3; c++)
+    inmask[c*msize + mdx] = mbuff[c] ? 1 : 0;
+}
+
+kernel void highlights_opposed_linear(read_only image2d_t in,
+                                      write_only image2d_t out,
+                                      const int width,
+                                      const int height,
+                                      const float4 clips,
+                                      const float4 chroma)
+{
+  const int x = get_global_id(0);
+  const int y = get_global_id(1);
+  if(x >= width || y >= height) return;
+
+  const float4 pixel = readpixel(in, x, y);
+  const float clip[3] = { clips.x, clips.y, clips.z };
+  const float chr[3] = { chroma.x, chroma.y, chroma.z };
+  const float inval[3] = { fmax(0.0f, pixel.x), fmax(0.0f, pixel.y), fmax(0.0f, pixel.z) };
+  float oval[3];
+  for(int c = 0; c < 3; c++)
+    oval[c] = inval[c] >= clip[c] ? fmax(inval[c], _calc_linear_refavg(pixel, c) + chr[c]) : inval[c];
+
+  write_imagef(out, (int2)(x, y), (float4)(oval[0], oval[1], oval[2], pixel.w));
 }
 
 #define SQRT3 1.7320508075688772935274463415058723669f
@@ -2635,20 +2718,20 @@ ashift_bilinear(read_only image2d_t in, write_only image2d_t out, const int widt
   // convert output pixel coordinates to original image coordinates
   pout[0] = roi_out.x + x + clip.x;
   pout[1] = roi_out.y + y + clip.y;
-  pout[0] /= out_scale;
-  pout[1] /= out_scale;
+  pout[0] = fp32_div(pout[0], out_scale);
+  pout[1] = fp32_div(pout[1], out_scale);
   pout[2] = 1.0f;
 
   // apply homograph
   for(int i = 0; i < 3; i++)
   {
     pin[i] = 0.0f;
-    for(int j = 0; j < 3; j++) pin[i] += homograph[3 * i + j] * pout[j];
+    for(int j = 0; j < 3; j++) pin[i] = fma(homograph[3 * i + j], pout[j], pin[i]);
   }
 
   // convert to input pixel coordinates
-  pin[0] /= pin[2];
-  pin[1] /= pin[2];
+  pin[0] = fp32_div(pin[0], pin[2]);
+  pin[1] = fp32_div(pin[1], pin[2]);
   pin[0] *= in_scale;
   pin[1] *= in_scale;
   pin[0] -= roi_in.x;
@@ -2706,20 +2789,20 @@ ashift_bicubic (read_only image2d_t in,
   // convert output pixel coordinates to original image coordinates
   pout[0] = roi_out.x + x + clip.x;
   pout[1] = roi_out.y + y + clip.y;
-  pout[0] /= out_scale;
-  pout[1] /= out_scale;
+  pout[0] = fp32_div(pout[0], out_scale);
+  pout[1] = fp32_div(pout[1], out_scale);
   pout[2] = 1.0f;
 
   // apply homograph
   for(int i = 0; i < 3; i++)
   {
     pin[i] = 0.0f;
-    for(int j = 0; j < 3; j++) pin[i] += homograph[3 * i + j] * pout[j];
+    for(int j = 0; j < 3; j++) pin[i] = fma(homograph[3 * i + j], pout[j], pin[i]);
   }
 
   // convert to input pixel coordinates
-  pin[0] /= pin[2];
-  pin[1] /= pin[2];
+  pin[0] = fp32_div(pin[0], pin[2]);
+  pin[1] = fp32_div(pin[1], pin[2]);
   pin[0] *= in_scale;
   pin[1] *= in_scale;
   pin[0] -= roi_in.x;
@@ -2732,7 +2815,6 @@ ashift_bicubic (read_only image2d_t in,
   int ty = floor(ry);
 
   float4 pixel = (float4)0.0f;
-  float weight = 0.0f;
   for(int jj = 1 - kwidth; jj <= kwidth; jj++)
     for(int ii= 1 - kwidth; ii <= kwidth; ii++)
   {
@@ -2744,11 +2826,10 @@ ashift_bicubic (read_only image2d_t in,
     float w = wx * wy;
 
     pixel += Areadpixel(in, clip_mirror(i, iwidth-1), clip_mirror(j, iheight-1)) * (float4)w;
-    weight += w;
   }
 
   pixel = (tx >= -1 && ty >= -1 && tx < iwidth && ty < iheight)
-          ? pixel/weight
+          ? pixel
           : (float4)0.0f;
 
   write_ipixel(out, (int2)(x, y), pixel);
@@ -2782,20 +2863,20 @@ ashift_lanczos2(read_only image2d_t in,
   // convert output pixel coordinates to original image coordinates
   pout[0] = roi_out.x + x + clip.x;
   pout[1] = roi_out.y + y + clip.y;
-  pout[0] /= out_scale;
-  pout[1] /= out_scale;
+  pout[0] = fp32_div(pout[0], out_scale);
+  pout[1] = fp32_div(pout[1], out_scale);
   pout[2] = 1.0f;
 
   // apply homograph
   for(int i = 0; i < 3; i++)
   {
     pin[i] = 0.0f;
-    for(int j = 0; j < 3; j++) pin[i] += homograph[3 * i + j] * pout[j];
+    for(int j = 0; j < 3; j++) pin[i] = fma(homograph[3 * i + j], pout[j], pin[i]);
   }
 
   // convert to input pixel coordinates
-  pin[0] /= pin[2];
-  pin[1] /= pin[2];
+  pin[0] = fp32_div(pin[0], pin[2]);
+  pin[1] = fp32_div(pin[1], pin[2]);
   pin[0] *= in_scale;
   pin[1] *= in_scale;
   pin[0] -= roi_in.x;
@@ -2858,20 +2939,20 @@ ashift_lanczos3(read_only image2d_t in,
   // convert output pixel coordinates to original image coordinates
   pout[0] = roi_out.x + x + clip.x;
   pout[1] = roi_out.y + y + clip.y;
-  pout[0] /= out_scale;
-  pout[1] /= out_scale;
+  pout[0] = fp32_div(pout[0], out_scale);
+  pout[1] = fp32_div(pout[1], out_scale);
   pout[2] = 1.0f;
 
   // apply homograph
   for(int i = 0; i < 3; i++)
   {
     pin[i] = 0.0f;
-    for(int j = 0; j < 3; j++) pin[i] += homograph[3 * i + j] * pout[j];
+    for(int j = 0; j < 3; j++) pin[i] = fma(homograph[3 * i + j], pout[j], pin[i]);
   }
 
   // convert to input pixel coordinates
-  pin[0] /= pin[2];
-  pin[1] /= pin[2];
+  pin[0] = fp32_div(pin[0], pin[2]);
+  pin[1] = fp32_div(pin[1], pin[2]);
   pin[0] *= in_scale;
   pin[1] *= in_scale;
   pin[0] -= roi_in.x;
@@ -2958,11 +3039,13 @@ kernel void md_vignette(read_only image2d_t in,
   const float cx = ((float)(roix + x) - w2);
   const float cy = ((float)(roiy + y) - h2);
   const float4 spline =
-    _interpolate_linear_spline(knots_vig, vig, knots, r * dt_fast_hypot(cx, cy));
+    _interpolate_linear_spline(knots_vig, vig, knots, r * hypot(cx, cy));
 
   float4 pixel  = Areadpixel(in, x, y);
   float mask = pixel.w;
-  pixel /= fmax(1e-4, spline);
+  pixel.x = fp32_div(pixel.x, fmax(1e-4f, spline.x));
+  pixel.y = fp32_div(pixel.y, fmax(1e-4f, spline.y));
+  pixel.z = fp32_div(pixel.z, fmax(1e-4f, spline.z));
   pixel.w = mask;
   write_imagef (out, (int2)(x, y), pixel);
 }
@@ -3048,8 +3131,9 @@ kernel void md_lens_correction(read_only image2d_t in,
   const int y = get_global_id(1);
   if(x >= owidth || y >= oheight) return;
 
-  const float cx = ((float)(roox + x) - w2) / scale;
-  const float cy = ((float)(rooy + y) - h2) / scale;
+  const float iscale = fp32_div(1.0f, scale);
+  const float cx = ((float)(roox + x) - w2) * iscale;
+  const float cy = ((float)(rooy + y) - h2) * iscale;
   const float radius = r * dt_fast_hypot(cx, cy);
   const float limw = (float)iwidth - 1.0f;
   const float limh = (float)iheight - 1.0f;

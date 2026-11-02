@@ -242,6 +242,15 @@ changes (where available).
   faster processing times in comparison to CPU code path, depending on
   CPU & GPU.
 
+- Contrast & texture now runs on OpenCL, so it no longer moves the
+  image back to the CPU in the middle of an otherwise GPU pipeline.
+
+- Highlight reconstruction's inpaint opposed method now runs on OpenCL
+  for linear raws, such as sRAW and linear DNG files.
+
+- Enlarge canvas now runs on OpenCL, so it no longer moves the image
+  back to the CPU in the middle of an otherwise GPU pipeline.
+
 - Hovering over and dragging nodes of long drawn brush strokes and
   paths is much faster, as the mask overlay is no longer redrawn on
   every mouse move and long outlines are drawn with far fewer points.
@@ -416,6 +425,10 @@ changes (where available).
   instead of having an empty label.
 
 ## Bug Fixes
+
+- Upscaled exports no longer show shifted bands where they were
+  processed in tiles, and the upscale now runs on OpenCL when it fits
+  the device.
 
 - Fixed Lightroom develop import which was not done. Only the tags,
   color labels, stars where imported.
@@ -811,6 +824,20 @@ changes (where available).
 - Fixed occasional magenta pixels on the CPU in red areas blended with
   the chromaticity, hue, color or HSV blend modes in display RGB, where
   OpenCL gave the right color.
+
+- Fixed inpaint opposed highlight reconstruction on linear raws, such
+  as sRAW and linear DNG, taking the clipped areas of every channel
+  from the red channel alone.
+
+- Fixed floating-point raw files with embedded DNG gain maps coming out
+  wrong with OpenCL. The gain maps of other raw files are now also
+  applied the same way with OpenCL as on the CPU.
+
+- Fixed the contrast equalizer with an edge sharpness set, and the
+  soft clip of negadoctor, giving a different result on the CPU than
+  with OpenCL: the CPU path used a coarse approximation of the
+  exponential. Edits using them may now look slightly different when
+  exported without OpenCL.
 
 ## Lua
 
