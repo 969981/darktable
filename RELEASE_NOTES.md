@@ -833,6 +833,10 @@ changes (where available).
   wrong with OpenCL. The gain maps of other raw files are now also
   applied the same way with OpenCL as on the CPU.
 
+- Fixed the filmic rgb graphs cutting off the curve when target white
+  is above 100% for HDR output: the look and mapping views now scale
+  their y axis to fit the curve and mark 100% display.
+
 ## Lua
 
 ### API Version
