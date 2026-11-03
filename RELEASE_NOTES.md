@@ -265,6 +265,10 @@ changes (where available).
   megabytes on each run. The correction is also more precise on x86,
   where it could be up to 0.3 px off, or 0.6 px when distorting.
 
+- Modules showing a histogram of their input (levels, rgb levels, rgb
+  curve, tone curve and color zones) now count it on the OpenCL device
+  instead of copying the image back to the CPU.
+
 ## Other Changes
 
 - AgX and sigmoid now adapt to HDR output, so one edit exports to
