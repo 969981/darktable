@@ -1,0 +1,88 @@
+name: Sync official darktable upstream
+
+on:
+  push:
+    branches:
+      - darktable-1.1.x
+    paths:
+      - .github/workflows/sync-upstream.yml
+  schedule:
+    - cron: '37 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: darktable-master-autosync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Check official master and dispatch release builds
+    if: github.repository == '969981/darktable'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fetch minimal Git history and synchronize safely
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/darktable-upstream-sync
+          cd /tmp/darktable-upstream-sync
+          git init -q
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add official https://github.com/darktable-org/darktable.git
+          git -c protocol.version=2 fetch --filter=blob:none --no-tags origin \
+            refs/heads/master:refs/remotes/origin/master
+          git -c protocol.version=2 fetch --filter=blob:none --no-tags official \
+            refs/heads/master:refs/remotes/official/master
+          latest="$(git rev-parse refs/remotes/official/master)"
+          previous="$(git rev-parse refs/remotes/origin/master)"
+          echo "Official master: $latest"
+          echo "Fork master:     $previous"
+          echo "sha=$latest" >> "$GITHUB_OUTPUT"
+
+          if [[ "$latest" != "$previous" ]]; then
+            if ! git merge-base --is-ancestor "$previous" "$latest"; then
+              echo "::error::Fork master diverged; won't discard local history."
+              exit 1
+            fi
+            git push origin "$latest:refs/heads/master"
+          fi
+
+          dispatched="$(git ls-remote --heads origin refs/heads/darktable-autosync-state | awk '{print $1}')"
+          if [[ "$dispatched" == "$latest" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Start official multi-platform builds
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run build-release.yml --repo "$GITHUB_REPOSITORY" \
+            --ref darktable-1.1.x -f source_sha="$SHA"
+          echo "Dispatched builds for $SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record dispatched commit
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+          cd /tmp/darktable-upstream-sync
+          git push origin "$SHA:refs/heads/darktable-autosync-state"
+
+      - name: Report no new changes
+        if: steps.upstream.outputs.changed != 'true'
+        run: echo "Upstream commit already dispatched; no new builds." >> "$GITHUB_STEP_SUMMARY"
