@@ -6,6 +6,7 @@ on:
       - darktable-1.1.x
     paths:
       - .github/workflows/sync-upstream.yml
+      - .github/workflows/build-release.yml
   schedule:
     - cron: '37 */3 * * *'
   workflow_dispatch:
@@ -66,4 +67,4 @@ jobs:
 
       - name: Report no new changes
         if: steps.upstream.outputs.changed != 'true'
-        run: echo "Upstream commit already dispatched; no new builds." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Official upstream revision already has all required release assets." >> "$GITHUB_STEP_SUMMARY"
