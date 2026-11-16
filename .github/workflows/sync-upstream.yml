@@ -1,4 +1,4 @@
-name: Sync official darktable upstream
+name: Check official darktable upstream and publish
 
 on:
   push:
@@ -25,41 +25,32 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - name: Fetch minimal Git history and synchronize safely
+      # GITHUB_TOKEN cannot push official commits changing .github/workflows.
+      # Build the immutable official revision instead of rewriting fork master.
+      - name: Check official master and existing release safely
         id: upstream
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/darktable-upstream-sync
-          cd /tmp/darktable-upstream-sync
-          git init -q
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git remote add official https://github.com/darktable-org/darktable.git
-          git -c protocol.version=2 fetch --filter=blob:none --no-tags origin \
-            refs/heads/master:refs/remotes/origin/master
-          git -c protocol.version=2 fetch --filter=blob:none --no-tags official \
-            refs/heads/master:refs/remotes/official/master
-          latest="$(git rev-parse refs/remotes/official/master)"
-          previous="$(git rev-parse refs/remotes/origin/master)"
+          latest="$(gh api repos/darktable-org/darktable/commits/master --jq '.sha')"
+          [[ "$latest" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::Could not verify official darktable master SHA."
+            exit 1
+          }
           echo "Official master: $latest"
-          echo "Fork master:     $previous"
           echo "sha=$latest" >> "$GITHUB_OUTPUT"
-
-          if [[ "$latest" != "$previous" ]]; then
-            if ! git merge-base --is-ancestor "$previous" "$latest"; then
-              echo "::error::Fork master diverged; won't discard local history."
-              exit 1
-            fi
-            git push origin "$latest:refs/heads/master"
-          fi
-
-          dispatched="$(git ls-remote --heads origin refs/heads/darktable-autosync-state | awk '{print $1}')"
-          if [[ "$dispatched" == "$latest" ]]; then
+          tag="autosync-${latest:0:12}"
+          assets="$(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          if grep -Eq '\.AppImage$' <<<"$assets" &&
+             grep -Eq '\.exe$' <<<"$assets" &&
+             grep -Eq '\.dmg$' <<<"$assets"; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already published $tag" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Building official source $latest without rewriting fork workflows." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Start official multi-platform builds
@@ -72,16 +63,6 @@ jobs:
           gh workflow run build-release.yml --repo "$GITHUB_REPOSITORY" \
             --ref darktable-1.1.x -f source_sha="$SHA"
           echo "Dispatched builds for $SHA" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Record dispatched commit
-        if: steps.upstream.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ steps.upstream.outputs.sha }}
-        run: |
-          set -euo pipefail
-          cd /tmp/darktable-upstream-sync
-          git push origin "$SHA:refs/heads/darktable-autosync-state"
 
       - name: Report no new changes
         if: steps.upstream.outputs.changed != 'true'
