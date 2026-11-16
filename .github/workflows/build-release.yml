@@ -166,7 +166,7 @@ jobs:
         run: |
           # Note that we can't make a shallow clone to reduce clone traffic and time, as we have to
           # fetch the entire history to correctly generate the version for the AppImage filename
-          git clone -b master https://github.com/${{ github.repository }} src
+          git clone -b master https://github.com/darktable-org/darktable.git src
           git -C src checkout --detach "$DARKTABLE_SOURCE_SHA"
           pushd src
           git submodule init
@@ -299,7 +299,7 @@ jobs:
         run: |
           # Note that we can't make a shallow clone to reduce clone traffic and time, as we have to
           # fetch the entire history to correctly generate the version for the installation package filename
-          git clone -b master https://github.com/${{ github.repository }} src
+          git clone -b master https://github.com/darktable-org/darktable.git src
           git -C src checkout --detach "$DARKTABLE_SOURCE_SHA"
           pushd src
           git submodule init
@@ -374,7 +374,7 @@ jobs:
         run: |
           # Note that we can't make a shallow clone to reduce clone traffic and time, as we have to
           # fetch the entire history to correctly generate the version for the disk image filename
-          git clone -b master https://github.com/${{ github.repository }} src
+          git clone -b master https://github.com/darktable-org/darktable.git src
           git -C src checkout --detach "$DARKTABLE_SOURCE_SHA"
           pushd src
           git submodule init
@@ -450,7 +450,7 @@ jobs:
           tag="autosync-$short"
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-              --target "$DARKTABLE_SOURCE_SHA" --prerelease \
+              --target darktable-1.1.x --prerelease \
               --title "darktable development $short" \
               --notes "Unofficial snapshot compiled from darktable-org/darktable master at $DARKTABLE_SOURCE_SHA. Includes Linux AppImage, Windows installer, and macOS DMG packages. Nightly builds may update darktable library databases; use a separate test library."
           fi
