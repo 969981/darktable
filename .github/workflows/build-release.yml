@@ -184,9 +184,30 @@ jobs:
           # right thing even if this environment variable is not present.
           echo "DARKTABLE_APPIMAGE_UPDATE=release" >> $GITHUB_ENV
       - name: Build AppImage
+        env:
+          # The upstream ONNX Runtime CMake finder reads GITHUB_TOKEN when
+          # requesting verified release hashes. Anonymous API requests can fail.
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -eo pipefail
           cd src
-          bash tools/appimage-build-script.sh
+          # Upstream packaging otherwise continues after CMake configuration
+          # errors and reports a misleading "missing plugins" error.
+          sed -i '2i set -e' tools/appimage-build-script.sh
+          if bash tools/appimage-build-script.sh 2>&1 | tee "$RUNNER_TEMP/darktable-ai-build.log"; then
+            echo "Built Linux AppImage with AI support." >> "$GITHUB_STEP_SUMMARY"
+          elif grep -q 'ONNX Runtime not found' "$RUNNER_TEMP/darktable-ai-build.log"; then
+            # Do not bypass upstream checksum verification. Build without AI
+            # only when the verified runtime cannot be obtained.
+            echo '::warning::Verified ONNX Runtime unavailable; rebuilding Linux AppImage without AI.'
+            echo "AI unavailable: publishing an explicitly marked Linux AppImage without AI." >> "$GITHUB_STEP_SUMMARY"
+            bash tools/appimage-build-script.sh --disable-ai
+          else
+            echo '::error::AppImage build failed for a reason other than ONNX Runtime.'
+            exit 1
+          fi
+          test -n "$(find build -maxdepth 1 -name 'Darktable-*.AppImage' -print -quit)"
       - name: Package upload
         uses: actions/upload-artifact@v7
         with:
